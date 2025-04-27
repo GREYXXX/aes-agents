@@ -1,18 +1,20 @@
 import os
 from dotenv import load_dotenv
+import json
 
 # Load environment variables first
 load_dotenv()
 
 import streamlit as st
 from agents.input_understanding import InputUnderstandingAgent
-from agents.clarification import ClarificationAgent
+from agents.requirement_expansion import RequirementExpansionAgent
 from agents.product_search import ProductSearchAgent
 from agents.evaluation import EvaluationAgent
 from agents.action_decision import ActionDecisionAgent
 from agents.communication import CommunicationAgent
 from agents.order_execution import OrderExecutionAgent
-from agents.providers.openai_provider import OpenAIProvider
+from agents.clarification import ClarificationAgent
+from agents.providers.llm_provider import LLMProvider
 from agents.providers.brave_search_provider import BraveSearchProvider
 from agents.providers.playwright_order_provider import PlaywrightOrderProvider
 
@@ -27,14 +29,15 @@ def check_api_connections():
     return status
 
 # Initialize providers
-llm_provider = OpenAIProvider()
+llm_provider = LLMProvider()
 search_provider = BraveSearchProvider()
 order_provider = PlaywrightOrderProvider(headless=True)
 
 # Initialize agents with providers
 input_agent = InputUnderstandingAgent(llm_provider)
 clarification_agent = ClarificationAgent(llm_provider)
-search_agent = ProductSearchAgent(search_provider)
+expansion_agent = RequirementExpansionAgent(llm_provider)
+search_agent = ProductSearchAgent(search_provider, llm_provider)
 evaluation_agent = EvaluationAgent(llm_provider)
 action_agent = ActionDecisionAgent(llm_provider)
 communication_agent = CommunicationAgent(llm_provider)
@@ -73,47 +76,169 @@ def main():
         if procurement_request:
             # Step 1: Input Understanding
             st.subheader("Step 1: Understanding Your Request")
-            extracted_info = input_agent.process(procurement_request)
+            extracted_info = input_agent.extract_info(procurement_request)
+            
+            # Translate extracted info to English if needed
+            if any(isinstance(value, str) and not value.isascii() for value in extracted_info.values()):
+                st.write("Translating requirements to English...")
+                translation_prompt = f"""
+                Translate the following procurement requirements to English:
+                {json.dumps(extracted_info, indent=2, ensure_ascii=False)}
+                
+                Return a JSON object with the same structure but with all text translated to English.
+                """
+                
+                try:
+                    translated_response = llm_provider.generate_completion(
+                        prompt=translation_prompt,
+                        system_prompt="You are a professional translator specializing in procurement documents.",
+                        response_format={"type": "json_object"}
+                    )
+                    extracted_info = json.loads(translated_response)
+                    st.success("Translation completed successfully!")
+                except Exception as e:
+                    st.warning(f"Translation failed: {str(e)}")
+                    st.info("Continuing with original text...")
+            
             st.json(extracted_info)
             
-            # Step 2: Clarification if needed
-            if clarification_agent.needs_clarification(extracted_info):
-                st.subheader("Step 2: Clarification Needed")
-                questions = clarification_agent.generate_questions(extracted_info)
-                st.write("Please provide additional information:")
-                for q in questions:
-                    st.write(f"- {q}")
-                return
+            # Step 2: Key Information Collection
+            st.subheader("Step 2: Provide Key Information")
             
-            # Step 3: Product Search
-            st.subheader("Step 3: Searching for Products")
-            search_results = search_agent.search(extracted_info)
-            if not search_results:
-                st.warning("No search results found. Please try a different search query or check your API connection.")
-                return
-            st.json(search_results)
+            # Check if all required information is already available
+            required_fields = {
+                "product_type": "Product Type",
+                "quantity": "Quantity",
+                "budget": "Budget",
+                "location": "Location"
+            }
+            
+            missing_fields = []
+            for field, label in required_fields.items():
+                if field not in extracted_info or not extracted_info[field]:
+                    missing_fields.append(label)
+            
+            if missing_fields:
+                st.write(f"Please provide the following missing information: {', '.join(missing_fields)}")
+                
+                with st.form("key_info_form"):
+                    # Product Type
+                    if "Product Type" in missing_fields:
+                        product_type = st.selectbox(
+                            "Product Type",
+                            options=["Laptop", "Desktop", "Monitor", "Printer", "Server", "Network Equipment", "Other"],
+                            index=0
+                        )
+                    else:
+                        product_type = extracted_info["product_type"]
+                    
+                    # Quantity
+                    if "Quantity" in missing_fields:
+                        quantity = st.number_input(
+                            "Quantity",
+                            min_value=1,
+                            value=1,
+                            step=1
+                        )
+                    else:
+                        quantity = extracted_info["quantity"]
+                    
+                    # Budget
+                    if "Budget" in missing_fields:
+                        budget = st.text_input(
+                            "Budget (e.g., 1000 AUD)",
+                            value=""
+                        )
+                    else:
+                        budget = extracted_info["budget"]
+                    
+                    # Location
+                    if "Location" in missing_fields:
+                        location = st.selectbox(
+                            "Delivery Location",
+                            options=["Perth", "Sydney", "Melbourne", "Brisbane", "Adelaide", "Other"],
+                            index=0
+                        )
+                    else:
+                        location = extracted_info["location"]
+                    
+                    # Special Requirements (optional)
+                    special_requirements = st.multiselect(
+                        "Special Requirements (Optional)",
+                        options=[
+                            "Fast Delivery",
+                            "Bulk Discount",
+                            "Warranty Required",
+                            "Installation Service",
+                            "Technical Support",
+                            "Other"
+                        ]
+                    )
+                    
+                    submitted = st.form_submit_button("Submit Information")
+                    
+                    if submitted:
+                        # Validate inputs
+                        if "Budget" in missing_fields and not budget:
+                            st.error("Please provide a budget")
+                        else:
+                            # Update extracted_info with form data
+                            extracted_info.update({
+                                "product_type": product_type,
+                                "quantity": quantity,
+                                "budget": budget,
+                                "location": location,
+                                "special_requirements": special_requirements
+                            })
+                            
+                            st.success("Information collected successfully!")
+                            # The form will be hidden after successful submission
+                            st.experimental_rerun()
+            else:
+                st.success("All required information is available. Proceeding to search...")
+                # Step 3: Product Search
+                st.subheader("Step 3: Searching for Products")
+                search_results = search_agent.search(extracted_info)
+                if not search_results:
+                    st.warning("No search results found. Please try a different search query or check your API connection.")
+                    return
+                st.json(search_results)
             
             # Step 4: Evaluation and Recommendation
             st.subheader("Step 4: Product Evaluation")
-            recommendations = evaluation_agent.evaluate(search_results, extracted_info)
-            if not recommendations:
-                st.warning("No recommendations could be generated. Please try again.")
+            evaluation = evaluation_agent.evaluate(search_results, extracted_info)
+            if not evaluation:
+                st.warning("No evaluation could be generated. Please try again.")
                 return
-            st.json(recommendations)
+            st.json(evaluation)
             
             # Step 5: Action Decision
             st.subheader("Step 5: Action Decision")
-            action = action_agent.decide(recommendations, extracted_info)
-            st.write(f"Recommended Action: {action['action']}")
+            action_decision = action_agent.decide(evaluation, extracted_info)
+            st.write(f"Action Decision: {action_decision['action']}")
+            st.write(f"Reason: {action_decision['reason']}")
             
             # Step 6: Communication or Order Execution
-            if action['action'] == 'request_approval':
+            if action_decision['action'] == 'request_approval':
                 st.subheader("Step 6: Approval Request")
-                approval_request = communication_agent.generate_approval_request(recommendations, extracted_info)
+                approval_request = communication_agent.generate_approval_request(evaluation, extracted_info)
                 st.write(approval_request)
+                
+                # Show approval form
+                with st.form("approval_form"):
+                    st.write("Please review the approval request above")
+                    approved = st.radio("Do you approve this request?", ["Yes", "No"])
+                    submitted = st.form_submit_button("Submit")
+                    
+                    if submitted and approved == "Yes":
+                        st.success("Approval granted! Proceeding with order execution...")
+                        order_result = order_agent.execute(evaluation, extracted_info['quantity'])
+                        st.write(order_result)
+                    elif submitted and approved == "No":
+                        st.warning("Request denied. Please modify your requirements and try again.")
             else:
                 st.subheader("Step 6: Order Execution")
-                order_result = order_agent.execute(recommendations, extracted_info['quantity'])
+                order_result = order_agent.execute(evaluation, extracted_info['quantity'])
                 st.write(order_result)
         else:
             st.error("Please enter a procurement request.")
