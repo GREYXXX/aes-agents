@@ -1,0 +1,8 @@
+streamlit==1.32.0
+openai==1.12.0
+python-dotenv==1.0.1
+brave-search==0.1.0
+pydantic==2.6.1
+playwright==1.42.0
+anthropic==0.18.1
+google-generativeai==0.3.2 
