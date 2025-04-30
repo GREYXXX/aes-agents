@@ -8,7 +8,7 @@ load_dotenv()
 import streamlit as st
 from agents.input_understanding import InputUnderstandingAgent
 from agents.requirement_expansion import RequirementExpansionAgent
-from agents.product_search import ProductSearchAgent
+from agents.multi_agent_search import MultiAgentProductSearch
 from agents.evaluation import EvaluationAgent
 from agents.action_decision import ActionDecisionAgent
 from agents.communication import CommunicationAgent
@@ -37,7 +37,7 @@ order_provider = PlaywrightOrderProvider(headless=True)
 input_agent = InputUnderstandingAgent(llm_provider)
 clarification_agent = ClarificationAgent(llm_provider)
 expansion_agent = RequirementExpansionAgent(llm_provider)
-search_agent = ProductSearchAgent(search_provider, llm_provider)
+search_agent = MultiAgentProductSearch(search_provider, llm_provider)
 evaluation_agent = EvaluationAgent(llm_provider)
 action_agent = ActionDecisionAgent(llm_provider)
 communication_agent = CommunicationAgent(llm_provider)
@@ -100,7 +100,15 @@ def main():
                     st.warning(f"Translation failed: {str(e)}")
                     st.info("Continuing with original text...")
             
-            st.json(extracted_info)
+            # Display extracted information in user-friendly format
+            st.markdown("### 📋 Extracted Requirements")
+            for key, value in extracted_info.items():
+                if isinstance(value, list):
+                    st.markdown(f"**{key.replace('_', ' ').title()}:**")
+                    for item in value:
+                        st.markdown(f"- {item}")
+                else:
+                    st.markdown(f"**{key.replace('_', ' ').title()}:** {value}")
             
             # Step 2: Key Information Collection
             st.subheader("Step 2: Provide Key Information")
@@ -196,50 +204,96 @@ def main():
                             st.experimental_rerun()
             else:
                 st.success("All required information is available. Proceeding to search...")
+                
                 # Step 3: Product Search
                 st.subheader("Step 3: Searching for Products")
-                search_results = search_agent.search(extracted_info)
-                if not search_results:
-                    st.warning("No search results found. Please try a different search query or check your API connection.")
-                    return
-                st.json(search_results)
-            
-            # Step 4: Evaluation and Recommendation
-            st.subheader("Step 4: Product Evaluation")
-            evaluation = evaluation_agent.evaluate(search_results, extracted_info)
-            if not evaluation:
-                st.warning("No evaluation could be generated. Please try again.")
-                return
-            st.json(evaluation)
-            
-            # Step 5: Action Decision
-            st.subheader("Step 5: Action Decision")
-            action_decision = action_agent.decide(evaluation, extracted_info)
-            st.write(f"Action Decision: {action_decision['action']}")
-            st.write(f"Reason: {action_decision['reason']}")
-            
-            # Step 6: Communication or Order Execution
-            if action_decision['action'] == 'request_approval':
-                st.subheader("Step 6: Approval Request")
-                approval_request = communication_agent.generate_approval_request(evaluation, extracted_info)
-                st.write(approval_request)
+                with st.spinner("🔍 Searching web for products..."):
+                    search_results = search_agent.search(extracted_info)
+                    if not search_results:
+                        st.warning("No search results found. Please try a different search query or check your API connection.")
+                        return
                 
-                # Show approval form
-                with st.form("approval_form"):
-                    st.write("Please review the approval request above")
-                    approved = st.radio("Do you approve this request?", ["Yes", "No"])
-                    submitted = st.form_submit_button("Submit")
+                st.success("✅ Search completed! Found {} products.".format(len(search_results)))
+                
+                # Step 4: Product Recommendations
+                st.subheader("Step 4: Product Recommendations")
+                with st.spinner("🤔 Analyzing and generating recommendations..."):
+                    recommendations = evaluation_agent.evaluate(search_results, extracted_info)
                     
-                    if submitted and approved == "Yes":
-                        st.success("Approval granted! Proceeding with order execution...")
-                        order_result = order_agent.execute(evaluation, extracted_info['quantity'])
-                        st.write(order_result)
-                    elif submitted and approved == "No":
-                        st.warning("Request denied. Please modify your requirements and try again.")
-            else:
-                st.subheader("Step 6: Order Execution")
-                order_result = order_agent.execute(evaluation, extracted_info['quantity'])
-                st.write(order_result)
+                    # Display recommendations (default 5)
+                    st.markdown("### 🎯 Top 5 Recommended Products")
+                    for idx, product in enumerate(recommendations[:5], 1):
+                        st.markdown(f"#### {idx}. {product['title']}")
+                        st.markdown(f"**Price:** {product['price']}")
+                        st.markdown(f"**Source:** {product['source']}")
+                        st.markdown(f"**Link:** [{product['title']}]({product['url']})")
+                        st.markdown(f"**Summary:** {product['summary']}")
+                        st.markdown("---")
+                    
+                    # Product selection
+                    st.markdown("### 🤔 Which product would you like to proceed with?")
+                    product_options = [f"{idx}. {product['title']}" for idx, product in enumerate(recommendations[:5], 1)]
+                    selected_option = st.selectbox(
+                        "Select a product",
+                        options=product_options,
+                        index=0
+                    )
+                    
+                    if st.button("Proceed with Selected Product"):
+                        selected_idx = int(selected_option.split('.')[0]) - 1
+                        selected_product = recommendations[selected_idx]
+                        
+                        # Step 5: Next Actions
+                        st.subheader("Step 5: Next Steps")
+                        st.markdown(f"### Selected Product: {selected_product['title']}")
+                        
+                        # Display selected product details
+                        col1, col2 = st.columns([2, 1])
+                        with col1:
+                            st.markdown("**Details:**")
+                            st.markdown(f"- Price: {selected_product['price']}")
+                            st.markdown(f"- Source: {selected_product['source']}")
+                            st.markdown(f"- Link: [{selected_product['title']}]({selected_product['url']})")
+                            st.markdown(f"- Summary: {selected_product['summary']}")
+                        
+                        # Next steps options
+                        st.markdown("### Choose your next action:")
+                        action = st.radio(
+                            "What would you like to do?",
+                            ["Request Approval", "Place Order", "Compare with Similar Products"]
+                        )
+                        
+                        if action == "Request Approval":
+                            st.info("🔍 Generating approval request...")
+                            approval_request = communication_agent.generate_approval_request([selected_product], extracted_info)
+                            st.markdown("### 📝 Approval Request")
+                            st.markdown(approval_request)
+                            
+                            # Show approval form
+                            with st.form("approval_form"):
+                                st.write("Please review the approval request above")
+                                approved = st.radio("Do you approve this request?", ["Yes", "No"])
+                                submitted = st.form_submit_button("Submit")
+                                
+                                if submitted and approved == "Yes":
+                                    st.success("Approval granted! Proceeding with order execution...")
+                                    order_result = order_agent.execute([selected_product], extracted_info['quantity'])
+                                    st.markdown("### ✅ Order Execution Result")
+                                    st.markdown(order_result)
+                                elif submitted and approved == "No":
+                                    st.warning("Request denied. Please select a different product or modify your requirements.")
+                        
+                        elif action == "Place Order":
+                            st.info("🛒 Processing order...")
+                            order_result = order_agent.execute([selected_product], extracted_info['quantity'])
+                            st.markdown("### ✅ Order Execution Result")
+                            st.markdown(order_result)
+                        
+                        elif action == "Compare with Similar Products":
+                            st.info("🔍 Finding similar products...")
+                            # Add comparison logic here
+                            st.markdown("### Similar Products")
+                            st.markdown("Feature coming soon...")
         else:
             st.error("Please enter a procurement request.")
 
