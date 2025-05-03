@@ -352,7 +352,7 @@ class ProductFilteringAndRankingAgent:
             # Filter and sort products
             filtered_products = [
                 p for p in scored_products 
-                if p.get('relevance_score', 0) >= 0.01
+                # if p.get('relevance_score', 0) >= 0.01
             ]
             
             return sorted(filtered_products, key=lambda x: x.get('relevance_score', 0), reverse=True)
@@ -584,7 +584,7 @@ class MultiAgentProductSearch:
         products_with_prices = self._estimate_missing_prices(ranked_products, extracted_info)
 
         # Return top 5 most relevant products
-        return products_with_prices[:5]
+        return products_with_prices[:]
 
     def _estimate_missing_prices(self, products: List[Dict[str, Any]], requirements: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Estimate prices for products with missing price information."""
