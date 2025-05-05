@@ -1,13 +1,13 @@
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
 from ..base_providers import OrderExecutionProvider
 from typing import Dict, Any
 import time
 import random
 
 class PlaywrightOrderProvider(OrderExecutionProvider):
-    def __init__(self, headless: bool = True):
+    def __init__(self, playwright, headless: bool = True):
         self.headless = headless
-        self.playwright = sync_playwright().start()
+        self.playwright = playwright
         self.browser = self.playwright.chromium.launch(headless=headless)
         
     def execute_order(self, product_info: Dict[str, Any], quantity: int) -> Dict[str, Any]:
